@@ -152,6 +152,11 @@ fn test_deploy_full_stack() {
     assert_eq!(id, 1);
     assert_eq!(factory.governor_count(), 1);
 
+    let key = DataKey::Governor(id);
+    let ttl_at_write =
+        env.as_contract(&factory_id, || env.storage().persistent().get_ttl(&key));
+    assert!(ttl_at_write >= GOVERNOR_TTL_LEDGERS);
+
     // Verify the stored entry
     let entry = factory.get_governor(&id);
     assert_eq!(entry.id, 1);
@@ -180,6 +185,23 @@ fn test_deploy_full_stack() {
     let votes_client = sorogov_token_votes::TokenVotesContractClient::new(&env, &entry.token);
     // token-votes was initialised with the caller-supplied SEP-41 token address
     assert_eq!(votes_client.token(), token);
+
+    // Keep instance storage alive while the persistent registry entry nears
+    // expiry, then verify get_governor refreshes that entry's TTL.
+    env.ledger()
+        .with_mut(|ledger| ledger.sequence_number += GOVERNOR_TTL_LEDGERS - 10);
+    env.as_contract(&factory_id, || {
+        env.storage()
+            .instance()
+            .extend_ttl(1, GOVERNOR_TTL_LEDGERS);
+    });
+    let entry_ttl_before_read =
+        env.as_contract(&factory_id, || env.storage().persistent().get_ttl(&key));
+    assert!(entry_ttl_before_read <= 10);
+    assert_eq!(factory.get_governor(&id).id, id);
+    let entry_ttl_after_read =
+        env.as_contract(&factory_id, || env.storage().persistent().get_ttl(&key));
+    assert!(entry_ttl_after_read >= GOVERNOR_TTL_LEDGERS);
 }
 
 #[test]
@@ -326,6 +348,14 @@ fn test_second_deploy_has_different_addresses() {
 
     assert_eq!(e1.id, 1);
     assert_eq!(e2.id, 2);
+
+    let first_page = factory.get_all_governors(&0, &1);
+    assert_eq!(first_page.len(), 1);
+    assert_eq!(first_page.get(0).unwrap().id, id1);
+    let second_page = factory.get_all_governors(&1, &10);
+    assert_eq!(second_page.len(), 1);
+    assert_eq!(second_page.get(0).unwrap().id, id2);
+    assert!(factory.get_all_governors(&2, &10).is_empty());
 }
 
 // ─── settings validation tests (issue #477) ───────────────────────────────────
